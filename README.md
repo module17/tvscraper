@@ -4,7 +4,7 @@ TV schedule HTML scraper for command line usage
 Hard-coded to use tvpassport HTML for Rogers cable Toronto - Digital Adapter
 
 ### Sample usage and output
-dk:tvscraper module17$ php tvscraper.php | less
+dk:tvscraper module17$ ./tvscraper | less
 
     Schedule for 7:30pm
 
