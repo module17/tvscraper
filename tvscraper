@@ -7,16 +7,5 @@ require __DIR__ . '/vendor/autoload.php';
 
 $tv = new Tvscraper();
 
-$lines = array();
-
-foreach (array(0,21,42,50) as $offset) {
-    $lines = array_merge($lines, $tv->getSchedule('41501', '', $offset, '-5', true));
-}
-
-if ($tv->display_single) {
-    echo sprintf('Schedule for %s' . PHP_EOL . PHP_EOL, $tv->times[1]);
-}
-
-foreach (array_unique($lines) as $line) {
-    echo $line;
-}
+$tv->initProvider('41501', '-5', true);
+$tv->outputSchedule(array(0,21,42,50));

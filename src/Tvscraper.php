@@ -14,6 +14,9 @@ class Tvscraper {
     public $debug = false;
     public $display_single = true;
     public $listing_id;
+    public $start_stamp = '';
+    public $timezone;
+    public $dst = true;
     public $schedule_size = 4;
     public $base_url = 'http://tvpassport.com/';
     public $schedule_url = 'tvgrid.shtml?';
@@ -114,6 +117,36 @@ class Tvscraper {
             $bin[] = $stream;
         }
         return $bin;
+    }
+
+    /*
+     * @param $offsets array of page offsets
+     */
+    public function outputSchedule($offsets = array(0)) {
+        $lines = array();
+
+        foreach ($offsets as $offset) {
+            $lines = array_merge(
+                $lines,
+                $this->getSchedule(
+                    $this->listing_id, $this->start_stamp, $offset, $this->timezone, $this->dst
+                )
+            );
+        }
+
+        if ($this->display_single) {
+            echo sprintf('Schedule for %s' . PHP_EOL . PHP_EOL, $this->times[1]);
+        }
+
+        foreach (array_unique($lines) as $line) {
+            echo $line;
+        }
+    }
+
+    public function initProvider($listing_id, $timezone, $dst) {
+        $this->listing_id = $listing_id;
+        $this->timezone = $timezone;
+        $this->dst = $dst;
     }
 
     /*
