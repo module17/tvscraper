@@ -4,7 +4,7 @@ TV schedule HTML scraper for command line usage
 Hard-coded to use tvpassport HTML for Rogers cable Toronto - Digital Adapter
 
 ### Sample usage and output
-dk:tvscraper module17$ ./tvscraper | less
+    dk:tvscraper module17$ ./tvscraper | less
 
     Schedule for 7:30pm
 
@@ -25,3 +25,13 @@ dk:tvscraper module17$ ./tvscraper | less
     15      WNED             (6:30) PBS NewsHour (30mins)
     16      WIVB             Wheel of Fortune (30mins)
     17      WGRZ             Entertainment Tonight (30mins)
+
+
+### Initialization
+
+    dk:tvscraper module17$ composer install
+
+    Loading composer repositories with package information
+    Updating dependencies (including require-dev)
+    Nothing to install or update
+    Generating autoload files
