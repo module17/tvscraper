@@ -4,8 +4,6 @@ namespace Tvscraper;
 
 require __DIR__ . '/vendor/autoload.php';
 
-
 $tv = new Tvscraper();
 
-$tv->initProvider('41501', '-5', true);
 $tv->outputSchedule(array(0,21,42,50));

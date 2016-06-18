@@ -1,5 +1,8 @@
 {
   "autoload": {
     "psr-4": {"Tvscraper\\": "src/"}
+  },
+  "require": {
+    "symfony/yaml": "^3.1"
   }
 }

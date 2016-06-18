@@ -1,5 +1,7 @@
 <?php
 namespace Tvscraper;
+use Symfony\Component\Yaml\Yaml;
+use Symfony\Component\Yaml\Exception\ParseException;
 
 /* tvscraper - tvpassport tv schedule scraper
  *
@@ -32,6 +34,16 @@ class Tvscraper {
             $this->debug = $config['debug'];
             $this->display_single = $config['display_single'];
         }
+        $this->readConfig();
+    }
+
+    public function readConfig() {
+        try {
+            $config = Yaml::parse(file_get_contents(__DIR__ . '/../config.yml'));
+        } catch (ParseException $e) {
+            throw new \Exception(sprintf("Unable to parse the YAML config file: %s", $e->getMessage()));
+        }
+        $this->initProvider($config['listing_id'], $config['timezone'], $config['dst']);
     }
 
     public function getSchedule($listing_id, $start_stamp = '', $offset, $timezone, $dst = true) {
