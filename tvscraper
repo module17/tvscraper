@@ -6,4 +6,4 @@ require __DIR__ . '/vendor/autoload.php';
 
 $tv = new Tvscraper();
 
-$tv->getLocation();
+$tv->getLineups();
