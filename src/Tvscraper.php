@@ -142,7 +142,7 @@ DATA;
     public function setTimezone() {
         $tz = readline('Enter your timezone (ie, America/Toronto): ');
 
-        $timeZoneList = explode(PHP_EOL, file_get_contents(__DIR__ . '/../timezones.yml'));
+        $timeZoneList = \DateTimeZone::listIdentifiers();
 
         foreach ($timeZoneList as $timeZone) {
             if ($timeZone === $tz) {
