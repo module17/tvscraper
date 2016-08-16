@@ -1,48 +1,74 @@
 <?php
 namespace Tvscraper;
-use Symfony\Component\Yaml\Yaml;
-use Symfony\Component\Yaml\Exception\ParseException;
 
-/* tvscraper - tvpassport tv schedule scraper
+require_once('Config.php');
+
+/**
+ * tvscraper - tvpassport tv schedule scraper
  *
- * Hard-coded to use luid 41501 - Rogers cable Toronto - Digital adapter
+ * @author module17
+ * @author Fenrisulfir
  *
- * ie. http://tvpassport.com/tvgrid.shtml?luid=41501&st=1465584150&sch=15&size=1&tzo=-5&dsto=1#x
+ * @package tvscraper
+ *
+ * @version 2.01
  *
  */
 
 class Tvscraper {
-    public $time_block = 30;
-    public $debug = false;
-    public $display_single = true;
-    public $listing_id;
-    public $start_stamp = '';
-    public $timezone;
-    public $dst = true;
-    public $schedule_size = 4;
-    public $base_url = 'http://tvpassport.com/';
-    public $schedule_url = 'tvgrid.shtml?';
-    public $provider_search_url = 'provider_search.shtml';
-    public $times = array();
-    public $service_areas = array();
-    public $provider_data = array();
-    public $postal_code = '';
-    public $city_code = '';
-
-
-    /*
-     * @param $config array of configuration settings
+    /**
+     * DEBUGGING FLAGS
+     * @var boolean $debugLineupNames   Display Broadcast Provider Array
+     * @var boolean $debugPostalCode    Display Postal Code and URL
+     * @var boolean $debugUsingParams   Display Params Used To Generate ShowData
+     * @var boolean $debugEndpoint      Display ShowData URL
+     * @var boolean $debugDataPattern   Display ShowData Array
+     *
+     * MEMBER FIELDS
+     * @var string      $base_url       TVPassport URL
+     * @var string      $schedule_url   ShowData URL
+     * @var string      $provider_url   BroadCast Provider URL
+     * @var Config      $config         Configuration Array
+     * @var string[]    $showData       ShowData Array
+     *
+     * METHODS
+     * @method          __construct()
+     * @method void     outputBanner()
+     * @method void     run()
+     * @method void     setTimeZone()
+     * @method void     setDisplayOptions()
+     * @method mixed    validateInput(string $input, FILTER_TYPE $filter)
+     * @method void     getLineups()
+     * @method void     getSchedule(string $code, string $timezone)
+     * @method void     buildPattern(string $pattern, string &$html)
+     * @method string   fetchHTML(string $url, string $method, string[] $post_fields)
+     *
      */
-    public function __construct($config = array()) {
-        if (!empty($config)) {
-            $this->time_block = $config['time_block'];
-            $this->debug = $config['debug'];
-            $this->display_single = $config['display_single'];
-        }
+    public $debugLineupNames = false;
+    public $debugPostalCode = true;
+    public $debugUserParams = true;
+    public $debugEndPoint = true;
+    public $debugDataPattern = true;
+
+    public $baseUrl = 'http://www.tvpassport.com/';
+    public $scheduleUrl = 'tvlistings/tvlistings/listings';
+    public $providerSearchUrl = 'index.php/lineups';
+
+    protected $config;
+
+    protected $showData = array();
+
+    /**
+     * Constructorizationify
+     */
+    public function __construct() {
+        $this->config = new Config();
         $this->outputBanner();
-        $this->readConfig();
     }
 
+    /**
+     * Claim this console output in the name of tvscraper
+     */
     public function outputBanner() {
         echo <<<DATA
 ********************************************************************************
@@ -52,244 +78,474 @@ class Tvscraper {
 DATA;
     }
 
-    public function readConfig() {
-        try {
-            $config = Yaml::parse(file_get_contents(__DIR__ . '/../config.yml'));
-        } catch (ParseException $e) {
-            throw new \Exception(sprintf('Unable to parse the YAML config file: %s', $e->getMessage()));
+    /**
+     * Initialize config options
+     *
+     * @return void
+     *
+     * @todo create better FSM
+     */
+    public function run() {
+        $input = readline('Do you want to enter your timezone? ');
+        if ($this->validateInput($input, FILTER_VALIDATE_BOOLEAN) || $this->config->getSetting("firstRun")) {
+            $this->setTimeZone();
         }
-        $this->initProvider($config['listing_id'], $config['timezone'], $config['dst']);
+
+        $input = readline('Do you want to setup your display options? ');
+        if ($this->validateInput($input, FILTER_VALIDATE_BOOLEAN) || $this->config->getSetting("firstRun")) {
+            $this->setDisplayOptions();
+        }
+
+        $config['firstRun'] = false;
+        $this->config->saveSettings($config);
+        $this->getLineups();
+
     }
 
-    public function getLocation() {
-        $code = readline('Enter your postal/zip code: ');
-        if ($code && preg_match('/^[0-9A-Za-z]{5,6}$/', $code)) {
-            if ($this->debug) {
-                echo sprintf(PHP_EOL . 'POST %s to %s' . PHP_EOL . PHP_EOL, $code, $this->provider_search_url);
+    /**
+     * Validate user input
+     *
+     * @param mixed     $input  User input data to be validated
+     * @param filter    $filter Type of filter used to validate input
+     *
+     * @return  mixed   NULL if validation fails
+     *
+     * @todo sanitize input
+     * @todo handle different data types
+     * @todo pass all input through here
+     */
+    public function validateInput($input, $filter) {
+
+        if ($filter === FILTER_VALIDATE_BOOLEAN) {
+            if (strtolower($input) == 'y') {
+                $input = 'true';
+            } elseif (strtolower($input) == 'n') {
+                $input = 'false';
             }
-            $url = sprintf('%s%s', $this->base_url, $this->provider_search_url);
-            $html = $this->fetchHTML($url, 'POST', array('city_search_string' => $code));
+        }
+
+        if ($input == '\n') {
+            $input = 'false';
+        }
+
+        return filter_var($input, $filter, FILTER_NULL_ON_FAILURE);
+
+    }
+
+    /**
+     * Reads user input and searches a precompiled list to select the appropriate IANA timezone
+     *
+     * @return void
+     *
+     * @todo create greedy search function for timezone cuz I'm lazy
+     */
+    public function setTimezone() {
+        $tz = readline('Enter your timezone (ie, America/Toronto): ');
+
+        $timeZoneList = \DateTimeZone::listIdentifiers();
+
+        foreach ($timeZoneList as $timeZone) {
+            if ($timeZone === $tz) {
+                $config['tz'] = $tz;
+                $this->config->saveSettings($config);
+                break;
+            }
+        }
+    }
+
+    /**
+     * Interactively allows the user to choose which data points to display and saves each option to an array
+     *
+     * @return void
+     */
+    public function setDisplayOptions() {
+        $count = 0;
+        foreach ($this->config->getSettings() as $k => $v) {
+            if ($count > 4) {
+                $valid = false;
+                while ($valid == false) {
+
+                    $input = readline('Do you want to see the ' . $k . '? [Y/n] - Defaults to n: ');
+                    $boolean = $this->validateInput($input, FILTER_VALIDATE_BOOLEAN);
+                    if (is_null($boolean)) {
+                        echo 'Invalid input!  Smarten up.' . PHP_EOL . PHP_EOL;
+                    } else {
+                        $this->config->saveSetting($k, $boolean);
+                        $valid = true;
+                    }
+                }
+            }
+            ++$count;
+        }
+    }
+
+    /**
+     * Gets a list of broadcast providers based on the users postal code.
+     *
+     * @throws \Exception
+     */
+    public function getLineups() {
+        $postalCode = readline('Enter your postal/zip code: ');
+        if ($postalCode && preg_match('/^[0-9A-Za-z]{5,6}$/', $postalCode)) {
+            if ($this->debugPostalCode) {
+                echo sprintf(PHP_EOL . 'POST %s to %s%s' . PHP_EOL . PHP_EOL, $postalCode, $this->baseUrl, $this->providerSearchUrl);
+            }
+            $url = sprintf('%s%s', $this->baseUrl, $this->providerSearchUrl);
+            $html = $this->fetchHTML($url, 'POST', array('postalCode' => $postalCode));
 
             if ($html) {
-                // get service_area_id options
-                preg_match_all('/<input type="radio" name="service_area_id" value="(.*?)".*?>*<b>(.*?)<\/b>/ms',
-                    $html, $service_area_ids);
+                // get lineup options
+                preg_match_all("/<a href='http:\/\/www.tvpassport.com\/lineups\/set\/(.*?)\?lineupname=(.*?)&tz='>(.*?)<\/a>/ms", $html, $lineupNames);
 
-                if (sizeof($service_area_ids[0]) < 1) {
+                if ($this->debugLineupNames) {
+                    var_dump($lineupNames);
+                }
+
+                if (sizeof($lineupNames[0]) < 1) {
                     echo sprintf(
                         'Cannot find any service area providers for postal/zip code: %s' . PHP_EOL . PHP_EOL,
-                        $code
+                        $postalCode
                     );
-                    $this->getLocation();
+                    $this->getLineups();
+
                     return;
                 } else {
-                    //var_dump($service_area_ids);
-                    echo 'Enter the number of your city from the list below.' . PHP_EOL . PHP_EOL;
-                    for ($i=0;$i<sizeof($service_area_ids[1]);$i++) {
-                        $code = trim($service_area_ids[1][$i]);
-                        $name = trim($service_area_ids[2][$i]);
-                        $this->service_areas[] = array($code, $name);
+
+                    echo PHP_EOL . 'Please select your lineup from the list below.' . PHP_EOL;
+                    for ($i = 0; $i < sizeof($lineupNames[0]); $i++) {
+                        $code = trim($lineupNames[1][$i]);
+                        $name = trim($lineupNames[3][$i]);
+
                         echo sprintf("%d\t%s (%s)" . PHP_EOL, $i, $name, $code);
                     }
-                    $this->postal_code = $code;
-                    $this->getProvider();
+                    echo PHP_EOL;
+                    $choice = readLine('Lineup Choice: ');
+                    echo PHP_EOL . PHP_EOL;
+
+                    $config['lu'] = $lineupNames[1][$choice];
+                    $this->config->saveSettings($config);
+
+                    $this->getSchedule($this->config->getSetting('lu'), $this->config->getSetting('tz'));
                     return;
                 }
             } else {
                 throw new \Exception('Error searching for provider. Try again.');
             }
         } else {
-            $this->getLocation();
+            $this->getLineups();
         }
     }
 
-    public function getProvider() {
-        $city_selection = readline(PHP_EOL . 'City selection number: ');
-
-        if (isset($this->service_areas[$city_selection])) {
-            if ($this->debug) {
-                echo sprintf(PHP_EOL . 'POST %s, %s to %s' . PHP_EOL . PHP_EOL, $this->postal_code, $this->service_areas[$city_selection][0], $this->provider_search_url);
-            }
-            $url = sprintf('%s%s', $this->base_url, $this->provider_search_url);
-            $html = $this->fetchHTML(
-                $url,
-                'POST',
-                array(
-                    'city_search_string' => $this->postal_code,
-                    'service_area_id' => $this->service_areas[$city_selection][0]
-                )
-            );
-
-            if ($html) {
-                // get all lineup selection options
-                preg_match_all('/<select name="lineup_id" class="textboxedit">(.*?)<\/select>/ms',
-                    $html, $lineup_ids);
-
-                if (sizeof($lineup_ids[0]) < 1) {
-                    echo sprintf(
-                        'Cannot find any providers for City selection number: %s' . PHP_EOL . PHP_EOL,
-                        $city_selection
-                    );
-                    $this->getProvider();
-                    return;
-                } else {
-                    // extract line up data
-                    preg_match_all('/<option value="(.*?)".*?>(.*?)<\/option>/ms',
-                        $lineup_ids[1][0], $lineup_data);
-
-                    echo PHP_EOL . 'Enter the number of your provider from the list below.' . PHP_EOL . PHP_EOL;
-                    for ($i = 0; $i < sizeof($lineup_data[1]); $i++) {
-                        $code = trim($lineup_data[1][$i]);
-                        $name = trim($lineup_data[2][$i]);
-                        $this->provider_data[] = array($code, $name);
-                        echo sprintf("%d\t%s (%s)" . PHP_EOL, $i, $name, $code);
-                    }
-                    $this->city_code = $this->service_areas[$city_selection][0];
-                    $this->getLineup();
-                    return;
-                }
-            } else {
-                throw new \Exception('Error getting provider list. Try again.');
-            }
-        } else {
-            $this->getProvider();
-        }
-    }
-
-    public function getLineup() {
-        $lineup_selection = readline(PHP_EOL . 'Provider selection number: ');
-
-        if (isset($this->provider_data[$lineup_selection])) {
-            $this->initProvider($this->provider_data[$lineup_selection][0], $this->timezone, $this->dst);
-            // TODO: figure out how many pages to get
-            $this->outputSchedule(array(0,20,40,60,80,100,120));
-        } else {
-            $this->getLineup();
-            return;
-        }
-    }
-
-    public function getSchedule($listing_id, $start_stamp = '', $offset, $timezone, $dst = true) {
+    /**
+     * Uses the broadcast code and timezone to get all of the shows currently playing.
+     *
+     * @param int       $code       The code used to represent the Broadcast Provider Lineup
+     * @param string    $timezone   The timezone
+     *
+     * @return void
+     *
+     * @todo build the regex pattern more gracefully
+     * @todo figure out how to nicely display potentially all the data
+     * @todo sanitize the data before displaying it
+     * @todo display data headings
+     * @todo handle missing data causing different sized arrays
+     */
+    public function getSchedule($code, $timezone) {
         $params = array(
-            'luid' => $listing_id, // Rogers cable Toronto - Digital adapter
-            'st' => $start_stamp, // start timestamp, if null automatically starts at most recent hour mark
-            'sch' => $offset, // channel listings result start [0, 21, 42, 50]
-            'size' => $this->schedule_size, //shows 7.5 hours / 15 columns of data
-            'tzo' => $timezone, // time zone offset
-            'dtso' => intval($dst) // dst boolean
+            'lu' => $code,
+            'st' => time(), // start timestamp, if null automatically starts at most recent hour mark
+            'et' => time(),  //end timestamp, set to same as st to find only currently playing shows
+            'tz' => $timezone
         );
 
-        $url = sprintf('%s%s%s', $this->base_url, $this->schedule_url, http_build_query($params));
-
-        if ($this->debug) {
-            echo sprintf(PHP_EOL . 'ENDPOINT: %s' . PHP_EOL, $url);
+        if ($this->debugUserParams) {
+            echo 'Params:' . PHP_EOL;
+            var_dump($params);
         }
 
-        $html = $this->fetchHTML($url);
-        $bin = array();
+        $url = $this->baseUrl . $this->scheduleUrl;
+        if ($this->debugEndPoint) {
+            echo sprintf(PHP_EOL . 'ENDPOINT: %s' . PHP_EOL . PHP_EOL, $url);
+        }
 
-        // get the schedule table first
-        preg_match_all('/<table width="1560".*?>(.*?)<\/table>/s', $html, $table);
+        $html = $this->fetchHTML($url, 'POST', $params);
 
-        // get time blocks
-        preg_match_all('/<td class="TimeMark".*?>(.*?)<\/td>/', $table[1][0], $times, PREG_PATTERN_ORDER);
+        $count = 0;
+        // get the show data
+        if ($this->config->getSetting('startTime')) {
+            $pattern = 'data-st="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('endTime')) {
+            $pattern = 'data-et="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('channelNumber')) {
+            $pattern = 'data-channelNumber=\"(.*?)\"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('subChannelNumber')) {
+            $pattern = 'data-subChannelNumber="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('callsign')) {
+            $pattern = 'data-callsign="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('listingId')) {
+            $pattern = 'data-listingid="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('listDateTime')) {
+            $pattern = 'data-listdatetime="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('duration')) {
+            $pattern = 'data-duration="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showId')) {
+            $pattern = 'data-showid="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('seriesId')) {
+            $pattern = 'data-seriesid="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showName')) {
+            $pattern = 'data-showname="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('episodeTitle')) {
+            $pattern = 'data-episodetitle="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('episodeNumber')) {
+            $pattern = 'data-episodenumber="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('parts')) {
+            $pattern = 'data-parts="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('partNumber')) {
+            $pattern = 'data-partnum="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('seriesPremiere')) {
+            $pattern = 'data-seriespremiere="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('seasonPremiere')) {
+            $pattern = 'data-seasonpremiere="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('seriesFinale')) {
+            $pattern = 'data-seriesfinale="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('seasonFinale')) {
+            $pattern = 'data-seasonfinale="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('repeat')) {
+            $pattern = 'data-repeat="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('newShow')) {
+            $pattern = 'data-newshow="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('rating')) {
+            $pattern = 'data-rating="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('captioned')) {
+            $pattern = 'data-captioned="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('educational')) {
+            $pattern = 'data-educational="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('blackwhite')) {
+            $pattern = 'data-blackwhite="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('subtitled')) {
+            $pattern = 'data-subtitled="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('live')) {
+            $pattern = 'data-live="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('hd')) {
+            $pattern = 'data-hd="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('descriptiveVideo')) {
+            $pattern = 'data-descriptivevideo="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('inProgress')) {
+            $pattern = 'data-inprogress="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showTypeId')) {
+            $pattern = 'data-showtypeid="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('breakoutLevel')) {
+            $pattern = 'data-breakoutlevel="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showType')) {
+            $pattern = 'data-showtype="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('year')) {
+            $pattern = 'data-year="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('guest')) {
+            $pattern = 'data-guest="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('cast')) {
+            $pattern = 'data-cast="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('director')) {
+            $pattern = 'data-director="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('starRating')) {
+            $pattern = 'data-starrating="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('description')) {
+            $pattern = 'data-description="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('league')) {
+            $pattern = 'data-league="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('team1')) {
+            $pattern = 'data-team1="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('team2')) {
+            $pattern = 'data-team2="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('sportEvent')) {
+            $pattern = 'data-sport_event="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('location')) {
+            $pattern = 'data-location="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showPicture')) {
+            $pattern = 'data-showPicture="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
+        if ($this->config->getSetting('showTitle')) {
+            $pattern = 'data-showTitle="(.*?)"';
+            $this->buildPattern($pattern, $html);
+            ++$count;
+        }
 
-        $this->times = array_unique($times[1]);
+        if ($this->debugDataPattern) {
+            var_dump($this->showData);
+        }
 
-        // get rows
-        preg_match_all('/<tr>(.*?)<\/tr>/', $table[1][0], $rows, PREG_PATTERN_ORDER);
-        $rows = $rows[1];
-
-        // per row operations, first and last rows are time markers
-        foreach (array_slice($rows, 1, -1) as $r => $v) {
-            // get all table data cells
-            preg_match_all('/<td.*?>(.*?)<\/td>/', $v, $tds, PREG_PATTERN_ORDER);
-            $tdr = $tds[0];
-            $tds = $tds[1];
-            $chno = $tds[0];
-            $chname = $tds[1];
-
-            // strip out html entities and trim
-            $chname = str_replace('&nbsp;', '', $chname);
-            $chname = trim($chname);
-            $chimg = $tds[2];
-
-            if ($this->display_single) {
-                $stream = sprintf("%s\t%s\t\t", $chno, $chname);
-            } else {
-                $stream = sprintf(PHP_EOL . 'ch %s: %s - %s' . PHP_EOL, $chno, $chname, $this->times[1]);
+        //Number of shows
+        for ($i = 0; $i < sizeof($this->showData[0][0]); ++$i) {
+            //Number of data points
+            for ($j = 0; $j < $count; ++$j) {
+                echo sprintf("%s\t", $this->showData[$j][1][$i]);
             }
-
-            // TODO: Allow arguments to control how many shows are displayed
-            // remaining rows 3 - end of array are shows, need to get colspan to determine length of show
-            $future = 1; //number of shows to show
-            //$future = sizeof($tdr); // show all
-
-            for ($i = 3;$i < 3 + $future; $i++) {
-                $show = trim($tdr[$i]);
-                // get show name and colspan
-                preg_match_all('/<td colspan="(.)".*?>(.*?)<\/td>/', $show, $showd, PREG_PATTERN_ORDER);
-                $length = intval($showd[1][0]);
-                $name = utf8_encode(trim($showd[2][0]));
-
-                // extract movie image identifier and create label
-                $name = str_replace(
-                    array(
-                        '<img src="/images/moviecamera3.gif" align="left"><b>',
-                        '<b>',
-                        '</b>',
-                        '  '
-                    ),
-                    array(
-                        '', '', '', ' '
-                    ),
-                    $name
-                );
-
-                $stream .= sprintf(" %s (%dmins)" . PHP_EOL, trim($name), ($length * $this->time_block));
-            }
-            // append to output buffer array
-            $bin[] = $stream;
+            echo PHP_EOL;
         }
-        return $bin;
+
     }
 
-    /*
-     * @param $offsets array of page offsets
-     */
-    public function outputSchedule($offsets = array(0)) {
-        $lines = array();
-
-        foreach ($offsets as $offset) {
-            $lines = array_merge(
-                $lines,
-                $this->getSchedule(
-                    $this->listing_id, $this->start_stamp, $offset, $this->timezone, $this->dst
-                )
-            );
-        }
-
-        if ($this->display_single) {
-            echo sprintf(PHP_EOL . 'Schedule for %s' . PHP_EOL . PHP_EOL, $this->times[1]);
-        }
-
-        foreach (array_unique($lines) as $line) {
-            echo $line;
-        }
-    }
-
-    public function initProvider($listing_id, $timezone, $dst) {
-        $this->listing_id = $listing_id;
-        $this->timezone = $timezone;
-        $this->dst = $dst;
-    }
-
-    /*
-     * @param $url string URL to fetch
+    /**
+     * Scrapes the data from the HTML and pushes it into the showData array
      *
-     * @return $html string Response from URL endpoint
+     * @param string    $pattern  Regex pattern for each data point
+     * @param string    $html     The scraped html
+     *
+     * @return void
+     *
+     * @todo stop adding raw data to showData array
      */
-    public function fetchHTML($url, $method = 'GET', $post_fields = array()) {
+    public
+    function buildPattern($pattern, $html) {
+        preg_match_all('/' . $pattern . '/ms', $html, $arr);
+
+        array_push($this->showData, $arr);
+    }
+
+    /**
+     * @param   string  $url            URL to fetch
+     * @param   string  $method         'POST' or 'GET'
+     * @param   mixed[] $post_fields
+     *
+     * @return  string  $html           Response from URL endpoint
+     *
+     * @todo handle invalid method
+     */
+    public
+    function fetchHTML($url, $method = 'GET', $post_fields = array()) {
         if ($method == 'GET') {
             $html = file_get_contents($url);
             return $html;
